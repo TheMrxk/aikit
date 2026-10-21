@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aikit · 统一 AI 接入测试台</title>
+<style>
+  :root{
+    --bg:#0f1220; --card:#181c2e; --card2:#1f2440; --line:#2a3050;
+    --txt:#e8ebf5; --mut:#9aa3c0; --brand:#6c8cff; --brand2:#8a6bff;
+    --ok:#2fbf71; --warn:#e6a533; --err:#e5564b; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(160deg,#0d1020,#141a30);color:var(--txt);
+    font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    padding:20px;max-width:980px;margin:0 auto}
+  h1{font-size:22px;margin:8px 0 2px;background:linear-gradient(90deg,var(--brand),var(--brand2));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;margin-bottom:16px}
+  .card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .card h2 .n{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--brand),var(--brand2));
+    display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+  label{display:block;font-size:12px;color:var(--mut);margin:10px 0 5px}
+  input,select,textarea{width:100%;background:var(--card2);border:1px solid var(--line);
+    border-radius:9px;color:var(--txt);padding:10px 12px;font-size:14px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--brand)}
+  textarea{resize:vertical;min-height:70px;font-family:inherit}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:640px){.row{grid-template-columns:1fr}}
+  .btn{border:0;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;
+    background:linear-gradient(90deg,var(--brand),var(--brand2));color:#fff;transition:.15s}
+  .btn:active{transform:scale(.97)}
+  .btn.ghost{background:var(--card2);border:1px solid var(--line);color:var(--txt)}
+  .btn.sm{padding:6px 12px;font-size:12.5px}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .ch{background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-top:10px}
+  .ch .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .ch .name{font-weight:700}
+  .tag{font-size:11px;padding:2px 8px;border-radius:20px;background:#2a3050;color:var(--mut)}
+  .tag.def{background:rgba(108,140,255,.2);color:#aabaff}
+  .tag.off{background:#3a2a2a;color:#e09a93}
+  .hint{font-size:12px;color:var(--mut);margin-top:4px;word-break:break-all}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--mut);display:inline-block}
+  .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
+  .out{background:#0c0f1c;border:1px solid var(--line);border-radius:10px;padding:13px;
+    margin-top:12px;white-space:pre-wrap;word-break:break-word;font-size:13.5px;min-height:20px;max-height:340px;overflow:auto}
+  .ok2{color:var(--ok)} .err2{color:var(--err)} .mut{color:var(--mut)}
+  .meta{font-size:12px;color:var(--mut);margin-top:8px}
+  .pill{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+  <h1>aikit · 统一 AI 接入测试台</h1>
+  <div class="sub">v<span id="ver">…</span> ｜ 选厂商 → 填 Key → 测试 → 对话 / JSON ｜ 配置存于服务端，Key 仅脱敏回显</div>
+
+  <div class="card">
+    <h2><span class="n">1</span>配置模型通道</h2>
+    <div class="row">
+      <div>
+        <label>通道名（自定义标识）</label>
+        <input id="chName" value="main" placeholder="如 main / work">
+      </div>
+      <div>
+        <label>厂商预设</label>
+        <select id="provider"></select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>API Key</label>
+        <input id="apiKey" type="password" placeholder="sk-...（编辑留空=保留原Key）" autocomplete="off">
+      </div>
+      <div>
+        <label>模型名（选预设自动填，可改）</label>
+        <input id="model" placeholder="模型名">
+      </div>
+    </div>
+    <label>Base URL（选预设自动填；自定义/中转站填这里）</label>
+    <input id="baseUrl" placeholder="https://.../v1">
+    <div class="hint" id="notes"></div>
+    <div class="actions">
+      <button class="btn" id="btnSave">💾 保存并设为默认</button>
+      <button class="btn ghost" id="btnTestInline">🔌 测试这条（不保存）</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span>已配置通道</h2>
+    <div id="channels"><div class="mut">暂无配置</div></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">3</span>对话测试</h2>
+    <label>用哪个通道（默认通道在前）</label>
+    <select id="useChannel"></select>
+    <label>System 提示词（可选）</label>
+    <input id="system" placeholder="如：你是一个严谨的答题助手">
+    <label style="margin-top:10px">消息</label>
+    <textarea id="message" placeholder="输入消息…">用一句话解释什么是 RAG</textarea>
+    <div class="actions">
+      <button class="btn" id="btnChat">💬 对话</button>
+      <button class="btn ghost" id="btnJson">🧩 JSON 模式</button>
+      <span class="pill" id="jsonOpt" style="display:none;align-self:center">
+        结构提示：<input id="schemaHint" style="width:300px;display:inline-block;padding:6px 8px"
+          value='{"answer":"A/B/C/D","reason":"简短理由"}'></span>
+    </div>
+    <div class="out" id="out">结果会显示在这里。</div>
+    <div class="meta" id="meta"></div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+let PRESETS = [];
+
+async function api(path, opts){ const r = await fetch(path, opts); return r.json(); }
+function esc(s){return String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+async function loadPresets(){
+  const j = await api("/api/presets");
+  PRESETS = j.presets;
+  $("#provider").innerHTML = PRESETS.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  fillPreset();
+}
+function fillPreset(){
+  const p = PRESETS.find(x=>x.id===$("#provider").value) || {};
+  if(p.base_url && !$("#baseUrl").dataset.touched) $("#baseUrl").value = p.base_url;
+  $("#model").value = (p.models||[])[0] || "";
+  $("#notes").textContent = p.notes ? "⚠️ " + p.notes : (p.docs ? "申请 Key：" + p.docs : "");
+}
+$("#provider").addEventListener("change", ()=>{ $("#baseUrl").dataset.touched=""; fillPreset(); });
+$("#baseUrl").addEventListener("input", e=> e.target.dataset.touched="1");
+
+async function refresh(){
+  const c = await api("/api/config");
+  const box = $("#channels");
+  const names = Object.keys(c.channels||{});
+  if(!names.length){ box.innerHTML='<div class="mut">暂无配置，用上面表单添加（或设置环境变量 AIKIT_API_KEY）。</div>'; }
+  else{
+    box.innerHTML = names.map(n=>{
+      const ch=c.channels[n];
+      return `<div class="ch">
+        <div class="top">
+          <span class="dot ${ch.enabled?'ok':'err'}"></span>
+          <span class="name">${esc(n)}</span>
+          <span class="tag">${esc(ch.preset_name)}</span>
+          <span class="tag">${esc(ch.model)}</span>
+          ${n===c.default?'<span class="tag def">默认</span>':''}
+          ${ch.enabled?'':'<span class="tag off">已禁用</span>'}
+          <span style="flex:1"></span>
+          <button class="btn sm ghost" onclick="testChannel('${esc(n)}')">🔌 测试</button>
+          ${n!==c.default?`<button class="btn sm ghost" onclick="setDef('${esc(n)}')">设默认</button>`:''}
+          <button class="btn sm ghost" onclick="toggleCh('${esc(n)}')">${ch.enabled?'禁用':'启用'}</button>
+          <button class="btn sm ghost" onclick="delCh('${esc(n)}')">删除</button>
+        </div>
+        <div class="hint">${esc(ch.base_url)} ｜ Key: ${esc(ch.key_hint||'')}</div>
+      </div>`;
+    }).join("");
+  }
+  const opts = ['<option value="">（默认通道）</option>'].concat(
+    names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`));
+  $("#useChannel").innerHTML = opts.join("");
+}
+
+async function saveChannel(){
+  const body = {
+    name:$("#chName").value.trim(), provider:$("#provider").value,
+    api_key:$("#apiKey").value.trim(), model:$("#model").value.trim(),
+    base_url:$("#baseUrl").value.trim(), make_default:true, enabled:true,
+  };
+  const j = await api("/api/channels",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!j.ok){ alert(j.error||"保存失败"); return; }
+  $("#apiKey").value="";
+  await refresh();
+}
+$("#btnSave").onclick = saveChannel;
+
+async function testInline(){
+  const body={provider:$("#provider").value, api_key:$("#apiKey").value.trim(),
+    model:$("#model").value.trim(), base_url:$("#baseUrl").value.trim()};
+  if(!body.api_key){ alert("请先填 Key（测试不落盘）"); return; }
+  setOut("测试连接中…","mut");
+  const j = await api("/api/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  renderPing(j.result);
+}
+$("#btnTestInline").onclick = testInline;
+
+async function testChannel(n){
+  setOut(`测试通道 ${n} 中…`,"mut");
+  const j = await api("/api/test",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({channel:n})});
+  renderPing(j.result);
+}
+window.testChannel = testChannel;
+window.setDef = async n=>{ await api(`/api/channels/${encodeURIComponent(n)}/default`,{method:"POST"}); refresh(); };
+window.toggleCh = async n=>{ await api(`/api/channels/${encodeURIComponent(n)}/toggle`,{method:"POST"}); refresh(); };
+window.delCh = async n=>{ if(confirm(`删除通道 ${n}？`)){ await api(`/api/channels/${encodeURIComponent(n)}`,{method:"DELETE"}); refresh(); } };
+
+function renderPing(r){
+  if(r&&r.ok) setOut(`✅ 连接成功\n模型：${esc(r.model)}（${esc(r.provider)}）\n延迟：${r.latency_ms}ms\n回声：${esc(r.reply||"")}`,"ok2");
+  else setOut("❌ 失败：" + esc(r?.error||"未知错误"),"err2");
+}
+function setOut(t,cls){ const o=$("#out"); o.className="out "+(cls||""); o.textContent=t; $("#meta").textContent=""; }
+
+$("#btnJson").onclick = ()=>{ $("#jsonOpt").style.display="inline-flex"; };
+
+async function doChat(jsonMode){
+  const body={message:$("#message").value, system:$("#system").value,
+    channel:$("#useChannel").value||null, json_mode:jsonMode,
+    schema_hint:jsonMode?$("#schemaHint").value:""};
+  setOut(jsonMode?"请求 JSON 中…":"思考中…","mut"); $("#meta").textContent="";
+  const j = await api("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!j.ok){ setOut("❌ "+j.error,"err2"); return; }
+  if(jsonMode){ setOut(JSON.stringify(j.json,null,2),"ok2"); }
+  else{ setOut(j.text,""); }
+  $("#meta").textContent = j.model ? `模型 ${j.model} ｜ ${j.provider} ｜ tokens: ${j.usage.prompt}+${j.usage.completion}` : "";
+}
+$("#btnChat").onclick=()=>doChat(false);
+$("#btnJson").onclick=()=>doChat(true);
+
+(async function init(){
+  const h = await api("/api/health"); $("#ver").textContent = h.version;
+  await loadPresets(); await refresh();
+})();
+</script>
+</body>
+</html>
