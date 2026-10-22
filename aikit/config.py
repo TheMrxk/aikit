@@ -96,6 +96,10 @@ class ConfigStore:
 
     # ---------- 持久化 ----------
     def load(self) -> "ConfigStore":
+        # 以磁盘为唯一真相源：每次重载先清空内存，避免文件被删/改名后
+        # 仍残留旧通道（否则开通检测会一直返回已配置）。
+        self.channels = {}
+        self.default = ""
         if os.path.exists(self.path):
             try:
                 text = Path(self.path).read_text(encoding="utf-8").strip()
