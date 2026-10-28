@@ -276,9 +276,10 @@ class AI:
         gen: GenParams | None = None,
         channel: str | None = None,
         chunk_timeout: float = 90.0,
-        total_timeout: float = 480.0,
+        total_timeout: float = 300.0,
         retries: int = 1,
         on_text=None,
+        disable_thinking: bool = False,
     ) -> Any:
         """流式拿 JSON（大整卷首选）。
 
@@ -301,7 +302,8 @@ class AI:
             try:
                 text = await self._stream_collect(
                     channel, msgs, gen or GenParams(temperature=0.1),
-                    chunk_timeout, total_timeout, use_json_format, on_text)
+                    chunk_timeout, total_timeout, use_json_format, on_text,
+                    disable_thinking)
             except ProviderError as exc:
                 # 个别厂商流式下不支持 response_format：退化为纯提示词约束
                 if use_json_format and ("response_format" in str(exc.body or "")
@@ -320,7 +322,8 @@ class AI:
         raise JSONModeError(str(last_exc))
 
     async def _stream_collect(self, channel, msgs, gen, chunk_timeout,
-                              total_timeout, json_mode, on_text):
+                              total_timeout, json_mode, on_text,
+                              disable_thinking=False):
         """逐块收集流式输出；首块到达前出错可按 auto_failover 换通道。
 
         思考模型（如 ark-code-latest）先吐 reasoning_content 再吐 content：
@@ -343,6 +346,10 @@ class AI:
             headers.update(cfg.extra_headers)
             payload = _build_payload(cfg, msgs, gen, json_mode, None)
             payload["stream"] = True
+            # 思考模型（ark-code 等）对大整卷会长时间发散推理甚至超时；
+            # 答题是客观选择、不需要长推理，显式关闭思考（不支持该字段的厂商会忽略）。
+            if disable_thinking:
+                payload["thinking"] = {"type": "disabled"}
             to = httpx.Timeout(connect=15.0, read=chunk_timeout,
                                write=30.0, pool=15.0)
 
