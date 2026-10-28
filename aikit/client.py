@@ -276,7 +276,7 @@ class AI:
         gen: GenParams | None = None,
         channel: str | None = None,
         chunk_timeout: float = 90.0,
-        total_timeout: float = 240.0,
+        total_timeout: float = 480.0,
         retries: int = 1,
         on_text=None,
     ) -> Any:
@@ -285,7 +285,10 @@ class AI:
         与非流式 chat_json 的区别：read 超时按「两个数据块之间的间隔」计时，
         端点把请求挂住不吐字时，chunk_timeout 秒即断开失败，而不是干等到整个
         请求超时；全程封顶 total_timeout。支持通道间故障转移（首块到达前）。
-        解析失败可带纠错提示重试 retries 轮。on_text(累计文本) 可用于进度展示。
+        只有「成功收到全文但解析不出 JSON」才带纠错提示重试 retries 轮；
+        网络/超时类失败直接抛出（重试只会再干等一个 total_timeout）。
+        思考模型：reasoning_content（思考过程）也计入「端点存活」并通过
+        on_text(answer_text, reasoning_text) 回调，最终答案仍只取 content。
         """
         sys_parts = ["你只能输出严格的 JSON，不要输出任何解释、Markdown 代码块或额外文字。"]
         if schema_hint:
@@ -306,12 +309,6 @@ class AI:
                     use_json_format = False
                     continue
                 raise
-            except AIKitError as exc:
-                last_exc = exc
-                if attempt >= retries:
-                    raise
-                await asyncio.sleep(min(2 ** attempt, 4))
-                continue
             parsed = _extract_json(text)
             if parsed is not None:
                 return parsed
@@ -324,7 +321,11 @@ class AI:
 
     async def _stream_collect(self, channel, msgs, gen, chunk_timeout,
                               total_timeout, json_mode, on_text):
-        """逐块收集流式输出；首块到达前出错可按 auto_failover 换通道。"""
+        """逐块收集流式输出；首块到达前出错可按 auto_failover 换通道。
+
+        思考模型（如 ark-code-latest）先吐 reasoning_content 再吐 content：
+        两者都计入「端点存活」（避免思考阶段被误判挂起），最终只返回 content。
+        """
         channels = ([(channel, self.store.resolve(channel))] if channel
                     else self.store.resolve_all_enabled())
         if not channels:
@@ -334,6 +335,7 @@ class AI:
         for idx, (name, cfg) in enumerate(channels):
             is_last = idx == len(channels) - 1
             pieces: list[str] = []
+            reasoning: list[str] = []
             got_first = False
             headers = {"Authorization": f"Bearer {cfg.api_key}",
                        "Content-Type": "application/json",
@@ -365,7 +367,7 @@ class AI:
                         async for line in r.aiter_lines():
                             if time.monotonic() > deadline:
                                 raise NetworkError(
-                                    f"AI 作答总时长超限（{total_timeout:.0f}s）")
+                                    f"AI 作答总时长超限（{total_timeout:.0f}s），题目可能过多或模型思考过久，请稍后重试")
                             if not line or not line.startswith("data:"):
                                 continue
                             chunk = line[5:].strip()
@@ -373,15 +375,25 @@ class AI:
                                 break
                             try:
                                 d = json.loads(chunk)
-                                piece = d["choices"][0].get("delta", {}).get("content")
+                                delta = d["choices"][0].get("delta", {})
                             except (ValueError, KeyError, IndexError):
                                 continue
-                            if piece:
-                                pieces.append(piece)
+                            if delta.get("reasoning_content"):
+                                reasoning.append(delta["reasoning_content"])
                                 got_first = True
                                 if on_text:
                                     try:
-                                        on_text("".join(pieces))
+                                        on_text("".join(pieces),
+                                                "".join(reasoning))
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                            if delta.get("content"):
+                                pieces.append(delta["content"])
+                                got_first = True
+                                if on_text:
+                                    try:
+                                        on_text("".join(pieces),
+                                                "".join(reasoning))
                                     except Exception:  # noqa: BLE001
                                         pass
                 return "".join(pieces)
