@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -265,6 +266,141 @@ class AI:
                             continue
             except httpx.HTTPError as exc:
                 raise NetworkError(f"流式网络错误：{type(exc).__name__}") from exc
+
+    async def chat_json_stream(
+        self,
+        messages: Any,
+        *,
+        system: str | None = None,
+        schema_hint: str = "",
+        gen: GenParams | None = None,
+        channel: str | None = None,
+        chunk_timeout: float = 90.0,
+        total_timeout: float = 240.0,
+        retries: int = 1,
+        on_text=None,
+    ) -> Any:
+        """流式拿 JSON（大整卷首选）。
+
+        与非流式 chat_json 的区别：read 超时按「两个数据块之间的间隔」计时，
+        端点把请求挂住不吐字时，chunk_timeout 秒即断开失败，而不是干等到整个
+        请求超时；全程封顶 total_timeout。支持通道间故障转移（首块到达前）。
+        解析失败可带纠错提示重试 retries 轮。on_text(累计文本) 可用于进度展示。
+        """
+        sys_parts = ["你只能输出严格的 JSON，不要输出任何解释、Markdown 代码块或额外文字。"]
+        if schema_hint:
+            sys_parts.append(f"JSON 结构要求：{schema_hint}")
+        sys_text = (system + "\n" if system else "") + "\n".join(sys_parts)
+        msgs = self._norm(messages, sys_text)
+        use_json_format = True
+        last_exc: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                text = await self._stream_collect(
+                    channel, msgs, gen or GenParams(temperature=0.1),
+                    chunk_timeout, total_timeout, use_json_format, on_text)
+            except ProviderError as exc:
+                # 个别厂商流式下不支持 response_format：退化为纯提示词约束
+                if use_json_format and ("response_format" in str(exc.body or "")
+                                        or exc.status_code == 400):
+                    use_json_format = False
+                    continue
+                raise
+            except AIKitError as exc:
+                last_exc = exc
+                if attempt >= retries:
+                    raise
+                await asyncio.sleep(min(2 ** attempt, 4))
+                continue
+            parsed = _extract_json(text)
+            if parsed is not None:
+                return parsed
+            last_exc = JSONModeError("模型输出无法解析为 JSON")
+            if attempt >= retries:
+                break
+            msgs = msgs + [{"role": "assistant", "content": text[:500]},
+                           {"role": "user", "content": "上一条不是合法 JSON。请只输出 JSON 本体。"}]
+        raise JSONModeError(str(last_exc))
+
+    async def _stream_collect(self, channel, msgs, gen, chunk_timeout,
+                              total_timeout, json_mode, on_text):
+        """逐块收集流式输出；首块到达前出错可按 auto_failover 换通道。"""
+        channels = ([(channel, self.store.resolve(channel))] if channel
+                    else self.store.resolve_all_enabled())
+        if not channels:
+            self.store.resolve()
+        errors: list[tuple[str, BaseException]] = []
+        deadline = time.monotonic() + total_timeout
+        for idx, (name, cfg) in enumerate(channels):
+            is_last = idx == len(channels) - 1
+            pieces: list[str] = []
+            got_first = False
+            headers = {"Authorization": f"Bearer {cfg.api_key}",
+                       "Content-Type": "application/json",
+                       "Accept": "text/event-stream"}
+            headers.update(cfg.extra_headers)
+            payload = _build_payload(cfg, msgs, gen, json_mode, None)
+            payload["stream"] = True
+            to = httpx.Timeout(connect=15.0, read=chunk_timeout,
+                               write=30.0, pool=15.0)
+
+            def _failoverable(exc) -> bool:
+                return self.auto_failover and not is_last and not got_first
+
+            try:
+                async with httpx.AsyncClient(base_url=cfg.base_url, timeout=to,
+                                             headers=headers) as http:
+                    async with http.stream("POST", _CHAT_PATH, json=payload) as r:
+                        if r.status_code in (401, 403):
+                            raise AuthError(
+                                f"鉴权失败 HTTP {r.status_code}（请检查 API Key）",
+                                r.status_code)
+                        if r.status_code == 429:
+                            raise RateLimitError("触发限流（429）")
+                        if r.status_code >= 400:
+                            body = (await r.aread()).decode("utf-8", "ignore")
+                            raise ProviderError(
+                                f"HTTP {r.status_code}：{body[:200]}",
+                                r.status_code, body)
+                        async for line in r.aiter_lines():
+                            if time.monotonic() > deadline:
+                                raise NetworkError(
+                                    f"AI 作答总时长超限（{total_timeout:.0f}s）")
+                            if not line or not line.startswith("data:"):
+                                continue
+                            chunk = line[5:].strip()
+                            if chunk == "[DONE]":
+                                break
+                            try:
+                                d = json.loads(chunk)
+                                piece = d["choices"][0].get("delta", {}).get("content")
+                            except (ValueError, KeyError, IndexError):
+                                continue
+                            if piece:
+                                pieces.append(piece)
+                                got_first = True
+                                if on_text:
+                                    try:
+                                        on_text("".join(pieces))
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                return "".join(pieces)
+            except httpx.TimeoutException as exc:
+                errors.append((name, exc))
+                if not _failoverable(exc):
+                    raise NetworkError(
+                        f"AI 响应超时（{chunk_timeout:.0f}s 无新内容），模型端点可能繁忙，请稍后重试"
+                    ) from exc
+            except (AuthError, RateLimitError, ProviderError, NetworkError) as exc:
+                errors.append((name, exc))
+                if not _failoverable(exc):
+                    raise
+            except httpx.HTTPError as exc:
+                errors.append((name, exc))
+                if not _failoverable(exc):
+                    raise NetworkError(
+                        f"流式网络错误：{type(exc).__name__}") from exc
+        raise AllProvidersFailed(errors)
 
     async def chat_json(
         self,
